@@ -1,0 +1,4 @@
+# Require @aryamangodara's review on every change. Enforced by the "Protect main"
+# ruleset (require_code_owner_review): migrations are the source of truth for the prod
+# schema, so the owner approves every change before it can merge to main.
+* @aryamangodara

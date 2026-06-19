@@ -1,0 +1,54 @@
+name: Migrate prod DB
+
+# Applies Alembic migrations to the PRODUCTION MySQL the moment an approved PR lands on
+# main. Runs on the self-hosted runner on the EC2 host (same box as the grader) so it can
+# reach prod MySQL; prod creds live in a host-only .env that is never in git. The human
+# checkpoint is the PR-approval gate (see the "Protect main" ruleset); this job auto-applies.
+on:
+  push:
+    branches: [main]
+    paths:                      # optional noise filter; dispatch still works for anything
+      - 'alembic/**'
+      - 'alembic.ini'
+      - 'requirements.txt'
+      - '.github/workflows/deploy-prod.yml'
+  workflow_dispatch: {}
+
+# Never let two migration runs touch alembic_version at once; let an in-flight run finish.
+concurrency:
+  group: migrate-prod-db
+  cancel-in-progress: false
+
+env:
+  # Host-only env file holding DATABASE_URL for prod (never in git).
+  ALEMBIC_ENV_FILE: ${{ vars.ALEMBIC_ENV_FILE || '/opt/apguru/alembic/.env' }}
+  PY_IMAGE: python:3.13-slim
+
+jobs:
+  migrate:
+    # Pin to the second runner registered on the EC2 host for THIS repo (label below).
+    runs-on: [self-hosted, apguru-alembic]
+    steps:
+      - name: Checkout merged main commit
+        uses: actions/checkout@v4
+
+      - name: Guard single head + apply migrations
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            --env-file "$ALEMBIC_ENV_FILE" \
+            -v "$GITHUB_WORKSPACE":/repo -w /repo \
+            "$PY_IMAGE" \
+            sh -eu -c '
+              pip install --no-cache-dir -r requirements.txt
+              echo "== Heads (must be exactly one) =="
+              alembic heads
+              [ "$(alembic heads | grep -c "(head)")" -eq 1 ] || {
+                echo "::error::Expected exactly one Alembic head — reconcile before migrating."; exit 1; }
+              echo "== Prod current revision (before) =="
+              alembic current
+              echo "== Applying: alembic upgrade head =="
+              alembic upgrade head
+              echo "== Prod current revision (after) =="
+              alembic current
+            '
