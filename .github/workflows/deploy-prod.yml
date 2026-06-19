@@ -40,9 +40,13 @@ jobs:
           set -uo pipefail
           log="$(mktemp)"
 
+          # Repo mounted READ-ONLY and bytecode writes disabled: the container runs as
+          # root, so anything it wrote into the workspace (e.g. __pycache__/*.pyc) would
+          # be root-owned and break the next checkout's `git clean` (run as github-runner).
           docker run --rm \
             --env-file "$ALEMBIC_ENV_FILE" \
-            -v "$GITHUB_WORKSPACE":/repo -w /repo \
+            -e PYTHONDONTWRITEBYTECODE=1 \
+            -v "$GITHUB_WORKSPACE":/repo:ro -w /repo \
             "$PY_IMAGE" \
             sh -eu -c '
               pip install --no-cache-dir -q -r requirements.txt
