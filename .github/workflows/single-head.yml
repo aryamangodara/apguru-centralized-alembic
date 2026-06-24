@@ -1,0 +1,80 @@
+name: Single head
+
+# PR-time guard: assert the migration chain has exactly ONE head before a change can merge.
+#
+# Why this exists: a duplicate or forked revision produces multiple Alembic heads, which
+# deploy-prod.yml REFUSES to migrate (it exits 3) — so without this, a multi-head surfaces
+# only *after* merge, at deploy time, with prod blocked and someone paged. This turns that
+# expensive failure into a cheap red X on the PR. This repo has been bitten twice already
+# (the duplicate 005 and duplicate 029 — see README "Migration-history notes").
+#
+# `alembic heads` reads only the versions/ scripts; it never runs env.py and never connects
+# to a database (verified: it succeeds with all DB_* / DATABASE_URL unset). So this job
+# needs no creds and runs on a GitHub-hosted runner — NOT the prod self-hosted runner that
+# deploy-prod.yml uses.
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+# No path filter on purpose: keeps the check always-present, so it can safely be made a
+# *required* status check without the "required-but-skipped blocks the PR" pitfall. ~30s.
+
+concurrency:
+  group: single-head-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  single-head:
+    name: Single migration head
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5      # v5 = Node 24 (v4's Node 20 is deprecated); matches deploy-prod.yml
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'        # matches deploy-prod.yml (python:3.13-slim)
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install Alembic
+        run: pip install -r requirements.txt
+
+      - name: Assert exactly one head
+        run: |
+          set -euo pipefail
+          echo "== alembic heads (must be exactly one) =="
+          heads="$(alembic heads)"
+          echo "$heads"
+          # Count the "(head)" markers rather than lines — robust against any stray stdout.
+          # Same idiom deploy-prod.yml uses when it refuses to migrate a multi-head chain.
+          count="$(printf '%s\n' "$heads" | grep -c '(head)' || true)"
+
+          {
+            echo "### Alembic — single-head check"
+            echo ""
+            if [ "$count" -eq 1 ]; then
+              echo "✅ Exactly one migration head — the chain is linear."
+            else
+              echo "❌ Expected exactly **one** head, found **$count**."
+              echo ""
+              echo "Multiple heads block production deploys — \`deploy-prod.yml\` refuses to migrate."
+              echo "Reconcile by rebasing the stray revision's \`down_revision\` onto the real head;"
+              echo "do **not** \`alembic merge\` your way around it (see README → \"Migration-history notes\")."
+            fi
+            echo ""
+            echo '```'
+            echo "$heads"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$count" -ne 1 ]; then
+            echo "::error title=Alembic::Expected exactly one head, found $count — reconcile the chain to a single head before merging."
+            exit 1
+          fi

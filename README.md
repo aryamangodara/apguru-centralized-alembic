@@ -75,3 +75,11 @@ Two historical hazards, both already resolved and baked into the current chain
 
 If you ever see more than one head, **stop** — reconcile the branch (rebase the
 stray revision's `down_revision`) before upgrading.
+
+A PR-time CI check ([`.github/workflows/single-head.yml`](.github/workflows/single-head.yml))
+now enforces this automatically: it runs `alembic heads` on every pull request and fails
+unless there is exactly one head — so a multi-head shows up as a red X before merge instead
+of blocking the production deploy afterwards. The check needs no database (`alembic heads`
+reads only the migration files), so it runs on a stock GitHub-hosted runner, not the prod
+self-hosted runner that `deploy-prod.yml` uses. Consider marking **"Single migration head"**
+a required status check in the "Protect main" ruleset so it must pass before merge.
